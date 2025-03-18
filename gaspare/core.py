@@ -267,14 +267,14 @@ def mk_part(inp: Union[str, Path, types.Part, types.File, PIL.Image.Image], c: g
     return types.Part.from_text(text=inp)
         
 
-# %% ../nbs/00_Core.ipynb 97
+# %% ../nbs/00_Core.ipynb 96
 def is_texty(o): return isinstance(o, str) or (isinstance(o, types.Part) and bool(o.text))
 
 def mk_parts(inps, c=None):
     cts = L(inps).map(mk_part, c=c) if inps else L("")
     return list(cts) if len(cts) > 1 or is_texty(cts[0]) else list(cts + [""])
 
-# %% ../nbs/00_Core.ipynb 102
+# %% ../nbs/00_Core.ipynb 101
 def mk_msg(content: list | str, role:str='user', *args, api='genai', **kw):
     """Create a `Content` object from the actual content (GenAI's equivalent of a Message)"""
     c = genai.Client(api_key=os.environ['GEMINI_API_KEY'])
@@ -287,7 +287,7 @@ def mk_msgs(msgs: list, *args, api:str="openai", **kw) -> list:
     if isinstance(msgs, str): msgs = [msgs]
     return [mk_msg(o, ('user', 'model')[i % 2], *args, api=api, **kw) for i, o in enumerate(msgs)]
 
-# %% ../nbs/00_Core.ipynb 112
+# %% ../nbs/00_Core.ipynb 111
 @patch(as_prop=True)
 def use(self: genai.Client): return getattr(self, "_u", usage())
 
@@ -295,7 +295,7 @@ def use(self: genai.Client): return getattr(self, "_u", usage())
 def cost(self: genai.Client): return getattr(self, "_cost", 0)
 
 
-# %% ../nbs/00_Core.ipynb 120
+# %% ../nbs/00_Core.ipynb 119
 @patch(as_prop=True)
 def _parts(self: types.GenerateContentResponse): return nested_idx(self, "candidates", 0, "content", "parts") or []
     
@@ -309,7 +309,7 @@ def _stream(self: genai.Client, s):
     r.candidates[0].content.parts = all_parts
     self._r(r)
 
-# %% ../nbs/00_Core.ipynb 131
+# %% ../nbs/00_Core.ipynb 130
 def _googlify_docs(fdoc:str,                  # Docstring of a function
                     argdescs: dict|None=None, # Dict of arg:docment of the arguments of the function
                     retd: str|None=None       # Return docoment of the function
@@ -328,7 +328,7 @@ def goog_doc(f:callable # A docment style function
     return _googlify_docs(fdoc, args, retd)
     
 
-# %% ../nbs/00_Core.ipynb 134
+# %% ../nbs/00_Core.ipynb 133
 def _geminify(f: callable) -> callable:
     """Makes a function suitable to be turned into a function declaration: 
     infers argument types from default values and removes the values from the signature"""
@@ -362,7 +362,7 @@ def prep_tool(f:callable, # The function to be passed to the LLM
     f_decl.parameters.required = required_params
     return f_decl
 
-# %% ../nbs/00_Core.ipynb 138
+# %% ../nbs/00_Core.ipynb 137
 def f_result(fname, fargs):
     f = globals().get(fname)
     try: return {"result": f(**fargs)}
@@ -374,7 +374,7 @@ def f_results(fcalls):
 def mk_fres_content(fres):
     return types.Content(role='tool', parts=[types.Part.from_function_response(**d) for d in fres])
 
-# %% ../nbs/00_Core.ipynb 141
+# %% ../nbs/00_Core.ipynb 140
 @patch
 def _r(self: genai.Client, r):
     self.result = r
@@ -394,8 +394,43 @@ def _mk_tool_call_contents(self: genai.Client):
     return [o for o in (q, r, tc) if o is not None]
     
 
-# %% ../nbs/00_Core.ipynb 156
+# %% ../nbs/00_Core.ipynb 155
 @patch
 def structured(self: genai.Client, inps, tool, model=None):
     _ = self(inps, tools=[tool], model=model, use_afc=False, tool_mode="ANY")  
     return [nested_idx(c, "response", "result") for c in getattr(self, "_fr", [])]
+
+# %% ../nbs/00_Core.ipynb 163
+@patch
+def __call__(self: genai.Client, 
+             inps=None, # The inputs to be passed to the model
+             sp:str='', # Optional system prompt
+             temp:float=0., # Temperature
+             maxtok:int|None=None, # Maximum number of tokens for the output
+             stream:bool=False, # Stream response?
+             stop:str|list[str]|None=None, # Stop sequence[s]
+             tools=None, # A list of functions or tools to be passed to the model
+             use_afc=True, # Use Google's automatic function calling? If False, functions will be converted to tools
+             # `AUTO` lets the model decide whether tools to use, 
+             # `ANY` forces the model to call a function `NONE` avoids any function calling
+             tool_mode='AUTO',  
+             **kwargs):
+    config= {k: v for k, v in kwargs.items() if k in types.GenerateContentConfigDict.__annotations__}
+    if _sp := sp or kwargs.get('system_instruction', False) or getattr(self, 'sp', False): config['system_instruction'] = _sp 
+    if _temp := temp or kwargs.get('temperature', False) or getattr(self, 'temp', False): config['temperature'] = _temp
+    if maxtok: config['max_output_tokens'] = maxtok
+    if stop: config['stop_sequences'] = [stop] if isinstance(stop, str) else stop
+    ## TODO: find a better way to set `tools` and `tool_config` keeping anything passed to `kwargs`
+    if tools:
+        config['tools'] = prep_tools(tools, toolify_everything=not use_afc)
+        tc = config.get('tool_config', dict())
+        fcc = tc.get('function_calling_config', dict())
+        fcc['mode'] = tool_mode
+        tc['function_calling_config'] = fcc
+        config['tool_config']= tc
+    parts = mk_parts(inps, self)
+    self.query_parts = self._mk_tool_call_contents() if (not inps) and getattr(self, "_fr", False) else parts
+    model = kwargs.get("model", False) or getattr(self, "model", None)
+    gen_f = self.models.generate_content_stream if stream else self.models.generate_content
+    r = gen_f(model=model, contents=self.query_parts, config=config if config else None)
+    return self._stream(r) if stream else self._r(r)
