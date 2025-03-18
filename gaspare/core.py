@@ -2,8 +2,9 @@
 
 # %% auto 0
 __all__ = ['all_model_types', 'thinking_models', 'imagen_models', 'vertex_models', 'models', 'pricings', 'audio_token_pricings',
-           'get_repr', 'det_repr', 'usage', 'get_pricing', 'is_youtube_url', 'mk_part', 'is_texty', 'mk_parts',
-           'mk_msg', 'mk_msgs', 'goog_doc', 'prep_tool', 'f_result', 'f_results', 'mk_fres_content', 'Client']
+           'get_repr', 'det_repr', 'contents', 'usage', 'get_pricing', 'is_youtube_url', 'mk_part', 'is_texty',
+           'mk_parts', 'mk_msg', 'mk_msgs', 'goog_doc', 'prep_tool', 'f_result', 'f_results', 'mk_fres_content',
+           'Client']
 
 # %% ../nbs/00_Core.ipynb 3
 import os
@@ -14,6 +15,7 @@ import mimetypes
 import inspect
 
 from typing import Union
+from io import BytesIO
 from urllib.parse import urlparse, parse_qs
 from functools import wraps
 from google import genai
@@ -27,10 +29,12 @@ from fastcore.docments import *
 
 # %% ../nbs/00_Core.ipynb 4
 all_model_types = {
+    "gemini-2.0-flash-exp": "llm-imagen#gemini-2.0-flash",
+    "gemini-2.0-flash-exp-image-generation": "llm-imagen#gemini-2.0-flash",
     "gemini-2.0-flash": "llm-vertex#gemini-2.0-flash",
     "gemini-2.0-flash-001": "llm-vertex#gemini-2.0-flash",
     "gemini-2.0-pro-exp-02-05": "llm#gemini-2.0-pro",
-    "gemini-2.0-flash-lite-preview-02-05": "llm#gemini-2.0-flash-lite",
+    "gemini-2.0-flash-lite": "llm#gemini-2.0-flash-lite",
     "gemini-1.5-flash": "llm-vertex#gemini-1.5-flash",
     "gemini-1.5-pro": "llm-vertex#gemini-1.5-pro",
     "gemini-1.5-pro-002": "llm-vertex#gemini-1.5-pro",
@@ -68,19 +72,35 @@ def _repr_markdown_(self: genai._common.BaseModel):
     return det_repr(self)
 
 # %% ../nbs/00_Core.ipynb 50
+def contents(r: genai.types.GenerateContentResponse):
+    """Returns a dictionary with the contents of a Gemini model response"""
+    cts = {'text': '', 'images': []}
+    for part in nested_idx(r, 'candidates', 0, 'content', 'parts'):
+        if part.text is not None: cts['text'] += part.text + '\n'
+        if part.inline_data is not None:
+            cts['images'].append(types.Image(image_bytes=part.inline_data.data, mime_type=part.inline_data.mime_type))
+    return cts
+    
+
+# %% ../nbs/00_Core.ipynb 51
 @patch
 def _repr_markdown_(self: genai.types.GenerateContentResponse):
     c = None
-    try:
-        c = self.text.replace("\n", "<br />")
-    except ValueError as e:
+    cts = contents(self)
+    if cts['images'] or cts['text']:
+        c = ''
+        for img in cts['images']:
+            b64 = base64.b64encode(img.image_bytes).decode("utf-8")
+            c += f'<div style="width: 200px; height: auto;"><img src="data:{img.mime_type};base64,{b64}" /></div>'
+        c += cts['text'].replace("\n", "<br />")
+    else:
         calls = (f"<code>{call.name}({', '.join([f'{a}={v}' for a, v in call.args.items()])})</code>" for call in self.function_calls)
         calls_repr = '\n'.join(f'<li>{c}</li>' for c in calls)
         c = f"<ul>{calls_repr}</ul>"
     dets = det_repr(self)
     return f"""{c}\n<details>{dets}</details>"""
 
-# %% ../nbs/00_Core.ipynb 54
+# %% ../nbs/00_Core.ipynb 55
 @patch(as_prop=True)
 def html(self: types.Image):
     b64 = base64.b64encode(self.image_bytes).decode("utf-8")
@@ -95,7 +115,7 @@ def _repr_markdown_(self: types.Image):
 {det_repr(self)}
 </details>"""
 
-# %% ../nbs/00_Core.ipynb 56
+# %% ../nbs/00_Core.ipynb 57
 @patch(as_prop=True)
 def img(self: types.GenerateImagesResponse):
     return self.generated_images[0].image._pil_image
@@ -142,7 +162,7 @@ def _repr_markdown_(self: types.GenerateImagesResponse):
 </details>
 """
 
-# %% ../nbs/00_Core.ipynb 61
+# %% ../nbs/00_Core.ipynb 62
 def usage(inp=0,     # Number of input tokens (excluding cached)
           out=0,     # Number of output tokens
           cached=0): # Number of cached tokens
@@ -152,7 +172,7 @@ def usage(inp=0,     # Number of input tokens (excluding cached)
                                                       prompt_token_count=inp + cached, 
                                                       total_token_count=inp + out + cached)
 
-# %% ../nbs/00_Core.ipynb 65
+# %% ../nbs/00_Core.ipynb 66
 @patch(as_prop=True)
 def cached(self: types.GenerateContentResponseUsageMetadata): 
     return self.cached_content_token_count or 0
@@ -169,7 +189,7 @@ def out(self: types.GenerateContentResponseUsageMetadata):
 def total(self: types.GenerateContentResponseUsageMetadata): 
     return self.total_token_count or self.prompt_token_count + self.candidates_token_count
 
-# %% ../nbs/00_Core.ipynb 68
+# %% ../nbs/00_Core.ipynb 69
 @patch
 def __repr__(self: types.GenerateContentResponseUsageMetadata):
     return f"Cached: {self.cached}; In: {self.inp}; Out: {self.out}; Total: {self.total}"
@@ -178,13 +198,13 @@ def __repr__(self: types.GenerateContentResponseUsageMetadata):
 def _repr_markdown_(self: types.GenerateContentResponseUsageMetadata):
     return self.__repr__()
 
-# %% ../nbs/00_Core.ipynb 72
+# %% ../nbs/00_Core.ipynb 73
 @patch
 def __add__(self: types.GenerateContentResponseUsageMetadata, other):
     cached = getattr(self, "cached", 0) + getattr(other, "cached", 0)
     return usage(self.inp + other.inp, self.out + other.out, cached)
 
-# %% ../nbs/00_Core.ipynb 75
+# %% ../nbs/00_Core.ipynb 76
 # $/1M input (non cached) tokens, $/1M output tokens, $/1M cached input tokens, 
 
 pricings = {
@@ -211,17 +231,17 @@ def get_pricing(model, prompt_tokens):
     return pricings.get(m, [0, 0, 0])
 
 
-# %% ../nbs/00_Core.ipynb 78
+# %% ../nbs/00_Core.ipynb 79
 @patch(as_prop=True)
 def cost(self: types.GenerateContentResponse):
     ip, op, cp = get_pricing(self.model_version, self.usage_metadata.prompt_token_count)
     return ((self.usage_metadata.inp * ip) + (self.usage_metadata.out * op) + (self.usage_metadata.cached * cp)) / 1e6
 
-# %% ../nbs/00_Core.ipynb 80
+# %% ../nbs/00_Core.ipynb 81
 @patch(as_prop=True)
 def cost(self: types.GenerateImagesResponse): return 0.03 * len(self.generated_images)
 
-# %% ../nbs/00_Core.ipynb 86
+# %% ../nbs/00_Core.ipynb 87
 def is_youtube_url(url: str) -> bool:
     """Check if the given URL is a valid YouTube video URL using urllib for parsing."""
     parsed = urlparse(url)
@@ -247,7 +267,7 @@ def is_youtube_url(url: str) -> bool:
         return len(video_id) == 11
     return False
 
-# %% ../nbs/00_Core.ipynb 88
+# %% ../nbs/00_Core.ipynb 89
 def mk_part(inp: Union[str, Path, types.Part, types.File, PIL.Image.Image], c: genai.Client|None=None):
     "Turns an input fragment into a multimedia `Part` to be sent to a Gemini model"
     api_client = c or genai.Client(api_key=os.environ["GEMINI_API_KEY"])
@@ -267,14 +287,14 @@ def mk_part(inp: Union[str, Path, types.Part, types.File, PIL.Image.Image], c: g
     return types.Part.from_text(text=inp)
         
 
-# %% ../nbs/00_Core.ipynb 96
+# %% ../nbs/00_Core.ipynb 97
 def is_texty(o): return isinstance(o, str) or (isinstance(o, types.Part) and bool(o.text))
 
 def mk_parts(inps, c=None):
     cts = L(inps).map(mk_part, c=c) if inps else L("")
     return list(cts) if len(cts) > 1 or is_texty(cts[0]) else list(cts + [""])
 
-# %% ../nbs/00_Core.ipynb 101
+# %% ../nbs/00_Core.ipynb 102
 def mk_msg(content: list | str, role:str='user', *args, api='genai', **kw):
     """Create a `Content` object from the actual content (GenAI's equivalent of a Message)"""
     c = genai.Client(api_key=os.environ['GEMINI_API_KEY'])
@@ -287,7 +307,7 @@ def mk_msgs(msgs: list, *args, api:str="openai", **kw) -> list:
     if isinstance(msgs, str): msgs = [msgs]
     return [mk_msg(o, ('user', 'model')[i % 2], *args, api=api, **kw) for i, o in enumerate(msgs)]
 
-# %% ../nbs/00_Core.ipynb 111
+# %% ../nbs/00_Core.ipynb 112
 @patch(as_prop=True)
 def use(self: genai.Client): return getattr(self, "_u", usage())
 
@@ -295,7 +315,7 @@ def use(self: genai.Client): return getattr(self, "_u", usage())
 def cost(self: genai.Client): return getattr(self, "_cost", 0)
 
 
-# %% ../nbs/00_Core.ipynb 119
+# %% ../nbs/00_Core.ipynb 120
 @patch(as_prop=True)
 def _parts(self: types.GenerateContentResponse): return nested_idx(self, "candidates", 0, "content", "parts") or []
     
@@ -309,7 +329,7 @@ def _stream(self: genai.Client, s):
     r.candidates[0].content.parts = all_parts
     self._r(r)
 
-# %% ../nbs/00_Core.ipynb 130
+# %% ../nbs/00_Core.ipynb 131
 def _googlify_docs(fdoc:str,                  # Docstring of a function
                     argdescs: dict|None=None, # Dict of arg:docment of the arguments of the function
                     retd: str|None=None       # Return docoment of the function
@@ -328,7 +348,7 @@ def goog_doc(f:callable # A docment style function
     return _googlify_docs(fdoc, args, retd)
     
 
-# %% ../nbs/00_Core.ipynb 133
+# %% ../nbs/00_Core.ipynb 134
 def _geminify(f: callable) -> callable:
     """Makes a function suitable to be turned into a function declaration: 
     infers argument types from default values and removes the values from the signature"""
@@ -362,7 +382,7 @@ def prep_tool(f:callable, # The function to be passed to the LLM
     f_decl.parameters.required = required_params
     return f_decl
 
-# %% ../nbs/00_Core.ipynb 137
+# %% ../nbs/00_Core.ipynb 138
 def f_result(fname, fargs):
     f = globals().get(fname)
     try: return {"result": f(**fargs)}
@@ -374,7 +394,7 @@ def f_results(fcalls):
 def mk_fres_content(fres):
     return types.Content(role='tool', parts=[types.Part.from_function_response(**d) for d in fres])
 
-# %% ../nbs/00_Core.ipynb 140
+# %% ../nbs/00_Core.ipynb 141
 @patch
 def _r(self: genai.Client, r):
     self.result = r
@@ -394,13 +414,13 @@ def _mk_tool_call_contents(self: genai.Client):
     return [o for o in (q, r, tc) if o is not None]
     
 
-# %% ../nbs/00_Core.ipynb 155
+# %% ../nbs/00_Core.ipynb 156
 @patch
 def structured(self: genai.Client, inps, tool, model=None):
     _ = self(inps, tools=[tool], model=model, use_afc=False, tool_mode="ANY")  
     return [nested_idx(c, "response", "result") for c in getattr(self, "_fr", [])]
 
-# %% ../nbs/00_Core.ipynb 163
+# %% ../nbs/00_Core.ipynb 164
 @patch
 def __call__(self: genai.Client, 
              inps=None, # The inputs to be passed to the model
@@ -432,17 +452,19 @@ def __call__(self: genai.Client,
     parts = mk_parts(inps, self)
     self.query_parts = self._mk_tool_call_contents() if (not inps) and getattr(self, "_fr", False) else parts
     model = kwargs.get("model", False) or getattr(self, "model", None)
+    if model in imagen_models and not getattr(self, "text_only", False):
+        config['response_modalities'] = kwargs.get('response_modalities', ['text', 'image'])
     gen_f = self.models.generate_content_stream if stream else self.models.generate_content
     r = gen_f(model=model, contents=self.query_parts, config=config if config else None)
     return self._stream(r) if stream else self._r(r)
 
-# %% ../nbs/00_Core.ipynb 168
+# %% ../nbs/00_Core.ipynb 170
 def Client(model:str, # The model to be used by default (can be overridden when generating)
            sp:str='', # System prompt
-           temp:float=0.6): # Default temperature
+           temp:float=0.6, # Default temperature
+           text_only:bool=False, # Suppress multimodality even if the model allows for it
+          ): 
     """An extension of `google.genai.Client` with a series of quality of life improvements"""
     c = genai.Client(api_key=os.environ['GEMINI_API_KEY'])
-    c.model = model
-    c.sp = sp
-    c.temp = temp
+    c.model, c.sp, c.temp, c.text_only = model, sp, temp, text_only
     return c
