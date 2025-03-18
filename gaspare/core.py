@@ -3,7 +3,7 @@
 # %% auto 0
 __all__ = ['all_model_types', 'thinking_models', 'imagen_models', 'vertex_models', 'models', 'pricings', 'audio_token_pricings',
            'get_repr', 'det_repr', 'usage', 'get_pricing', 'is_youtube_url', 'mk_part', 'is_texty', 'mk_parts',
-           'mk_msg', 'mk_msgs', 'goog_doc', 'prep_tool', 'f_result', 'f_results', 'mk_fres_content']
+           'mk_msg', 'mk_msgs', 'goog_doc', 'prep_tool', 'f_result', 'f_results', 'mk_fres_content', 'Client']
 
 # %% ../nbs/00_Core.ipynb 3
 import os
@@ -405,7 +405,7 @@ def structured(self: genai.Client, inps, tool, model=None):
 def __call__(self: genai.Client, 
              inps=None, # The inputs to be passed to the model
              sp:str='', # Optional system prompt
-             temp:float=0., # Temperature
+             temp:float=0.6, # Temperature
              maxtok:int|None=None, # Maximum number of tokens for the output
              stream:bool=False, # Stream response?
              stop:str|list[str]|None=None, # Stop sequence[s]
@@ -415,6 +415,7 @@ def __call__(self: genai.Client,
              # `ANY` forces the model to call a function `NONE` avoids any function calling
              tool_mode='AUTO',  
              **kwargs):
+    """Call to a Gemini LLM"""
     config= {k: v for k, v in kwargs.items() if k in types.GenerateContentConfigDict.__annotations__}
     if _sp := sp or kwargs.get('system_instruction', False) or getattr(self, 'sp', False): config['system_instruction'] = _sp 
     if _temp := temp or kwargs.get('temperature', False) or getattr(self, 'temp', False): config['temperature'] = _temp
@@ -434,3 +435,14 @@ def __call__(self: genai.Client,
     gen_f = self.models.generate_content_stream if stream else self.models.generate_content
     r = gen_f(model=model, contents=self.query_parts, config=config if config else None)
     return self._stream(r) if stream else self._r(r)
+
+# %% ../nbs/00_Core.ipynb 168
+def Client(model:str, # The model to be used by default (can be overridden when generating)
+           sp:str='', # System prompt
+           temp:float=0.6): # Default temperature
+    """An extension of `google.genai.Client` with a series of quality of life improvements"""
+    c = genai.Client(api_key=os.environ['GEMINI_API_KEY'])
+    c.model = model
+    c.sp = sp
+    c.temp = temp
+    return c
