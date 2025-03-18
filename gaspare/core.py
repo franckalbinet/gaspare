@@ -2,8 +2,8 @@
 
 # %% auto 0
 __all__ = ['all_model_types', 'thinking_models', 'imagen_models', 'vertex_models', 'models', 'pricings', 'audio_token_pricings',
-           'get_repr', 'det_repr', 'usage', 'get_pricing', 'mk_part', 'is_texty', 'mk_parts', 'mk_msg', 'mk_msgs',
-           'goog_doc', 'prep_tool', 'f_result', 'f_results', 'mk_fres_content']
+           'get_repr', 'det_repr', 'usage', 'get_pricing', 'is_youtube_url', 'mk_part', 'is_texty', 'mk_parts',
+           'mk_msg', 'mk_msgs', 'goog_doc', 'prep_tool', 'f_result', 'f_results', 'mk_fres_content']
 
 # %% ../nbs/00_Core.ipynb 3
 import os
@@ -14,6 +14,7 @@ import mimetypes
 import inspect
 
 from typing import Union
+from urllib.parse import urlparse, parse_qs
 from functools import wraps
 from google import genai
 from google.genai import types
@@ -221,6 +222,32 @@ def cost(self: types.GenerateContentResponse):
 def cost(self: types.GenerateImagesResponse): return 0.03 * len(self.generated_images)
 
 # %% ../nbs/00_Core.ipynb 86
+def is_youtube_url(url: str) -> bool:
+    """Check if the given URL is a valid YouTube video URL using urllib for parsing."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ('http', 'https'): return False
+    host = parsed.netloc.lower()
+    
+    # Standard YouTube URL (e.g., https://www.youtube.com/watch?v=VIDEO_ID)
+    if host in ('www.youtube.com', 'youtube.com', 'm.youtube.com'):
+        if parsed.path == '/watch':
+            query_params = parse_qs(parsed.query)
+            if 'v' in query_params:
+                video_id = query_params['v'][0]
+                return len(video_id) == 11
+            return False
+        # Embedded YouTube URL (e.g., https://www.youtube.com/embed/VIDEO_ID)
+        elif parsed.path.startswith('/embed/'):
+            video_id = parsed.path.split('/embed/')[1]
+            return len(video_id) == 11
+
+    # Shortened YouTube URL (e.g., https://youtu.be/VIDEO_ID)
+    elif host == 'youtu.be':
+        video_id = parsed.path.lstrip('/')
+        return len(video_id) == 11
+    return False
+
+# %% ../nbs/00_Core.ipynb 88
 def mk_part(inp: Union[str, Path, types.Part, types.File, PIL.Image.Image], c: genai.Client|None=None):
     "Turns an input fragment into a multimedia `Part` to be sent to a Gemini model"
     api_client = c or genai.Client(api_key=os.environ["GEMINI_API_KEY"])
@@ -230,6 +257,7 @@ def mk_part(inp: Union[str, Path, types.Part, types.File, PIL.Image.Image], c: g
     if isinstance(inp, bytes):
         mt = mimetypes.types_map["." + imghdr.what(None, h=inp)]
         return types.Part.from_bytes(data=inp, mime_type=mt)
+    if is_youtube_url(inp): return types.Part.from_uri(file_uri=inp, mime_type='video/*')
     p_inp = Path(inp)
     if p_inp.exists():
         mt = mimetypes.guess_type(p_inp)[0]
@@ -239,14 +267,14 @@ def mk_part(inp: Union[str, Path, types.Part, types.File, PIL.Image.Image], c: g
     return types.Part.from_text(text=inp)
         
 
-# %% ../nbs/00_Core.ipynb 94
+# %% ../nbs/00_Core.ipynb 97
 def is_texty(o): return isinstance(o, str) or (isinstance(o, types.Part) and bool(o.text))
 
 def mk_parts(inps, c=None):
     cts = L(inps).map(mk_part, c=c) if inps else L("")
     return list(cts) if len(cts) > 1 or is_texty(cts[0]) else list(cts + [""])
 
-# %% ../nbs/00_Core.ipynb 99
+# %% ../nbs/00_Core.ipynb 102
 def mk_msg(content: list | str, role:str='user', *args, api='genai', **kw):
     """Create a `Content` object from the actual content (GenAI's equivalent of a Message)"""
     c = genai.Client(api_key=os.environ['GEMINI_API_KEY'])
@@ -259,7 +287,7 @@ def mk_msgs(msgs: list, *args, api:str="openai", **kw) -> list:
     if isinstance(msgs, str): msgs = [msgs]
     return [mk_msg(o, ('user', 'model')[i % 2], *args, api=api, **kw) for i, o in enumerate(msgs)]
 
-# %% ../nbs/00_Core.ipynb 109
+# %% ../nbs/00_Core.ipynb 112
 @patch(as_prop=True)
 def use(self: genai.Client): return getattr(self, "_u", usage())
 
@@ -267,7 +295,7 @@ def use(self: genai.Client): return getattr(self, "_u", usage())
 def cost(self: genai.Client): return getattr(self, "_cost", 0)
 
 
-# %% ../nbs/00_Core.ipynb 117
+# %% ../nbs/00_Core.ipynb 120
 @patch(as_prop=True)
 def _parts(self: types.GenerateContentResponse): return nested_idx(self, "candidates", 0, "content", "parts") or []
     
@@ -281,7 +309,7 @@ def _stream(self: genai.Client, s):
     r.candidates[0].content.parts = all_parts
     self._r(r)
 
-# %% ../nbs/00_Core.ipynb 128
+# %% ../nbs/00_Core.ipynb 131
 def _googlify_docs(fdoc:str,                  # Docstring of a function
                     argdescs: dict|None=None, # Dict of arg:docment of the arguments of the function
                     retd: str|None=None       # Return docoment of the function
@@ -300,7 +328,7 @@ def goog_doc(f:callable # A docment style function
     return _googlify_docs(fdoc, args, retd)
     
 
-# %% ../nbs/00_Core.ipynb 131
+# %% ../nbs/00_Core.ipynb 134
 def _geminify(f: callable) -> callable:
     """Makes a function suitable to be turned into a function declaration: 
     infers argument types from default values and removes the values from the signature"""
@@ -334,7 +362,7 @@ def prep_tool(f:callable, # The function to be passed to the LLM
     f_decl.parameters.required = required_params
     return f_decl
 
-# %% ../nbs/00_Core.ipynb 135
+# %% ../nbs/00_Core.ipynb 138
 def f_result(fname, fargs):
     f = globals().get(fname)
     try: return {"result": f(**fargs)}
@@ -346,7 +374,7 @@ def f_results(fcalls):
 def mk_fres_content(fres):
     return types.Content(role='tool', parts=[types.Part.from_function_response(**d) for d in fres])
 
-# %% ../nbs/00_Core.ipynb 138
+# %% ../nbs/00_Core.ipynb 141
 @patch
 def _r(self: genai.Client, r):
     self.result = r
@@ -366,7 +394,7 @@ def _mk_tool_call_contents(self: genai.Client):
     return [o for o in (q, r, tc) if o is not None]
     
 
-# %% ../nbs/00_Core.ipynb 153
+# %% ../nbs/00_Core.ipynb 156
 @patch
 def structured(self: genai.Client, inps, tool, model=None):
     _ = self(inps, tools=[tool], model=model, use_afc=False, tool_mode="ANY")  
