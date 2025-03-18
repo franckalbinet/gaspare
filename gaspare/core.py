@@ -2,7 +2,8 @@
 
 # %% auto 0
 __all__ = ['all_model_types', 'thinking_models', 'imagen_models', 'vertex_models', 'models', 'pricings', 'audio_token_pricings',
-           'get_repr', 'det_repr', 'usage', 'get_pricing', 'mk_part', 'is_texty', 'mk_parts', 'goog_doc', 'prep_tool']
+           'get_repr', 'det_repr', 'usage', 'get_pricing', 'mk_part', 'is_texty', 'mk_parts', 'mk_msg', 'mk_msgs',
+           'goog_doc', 'prep_tool', 'f_result', 'f_results', 'mk_fres_content']
 
 # %% ../nbs/00_Core.ipynb 3
 import os
@@ -17,6 +18,7 @@ from functools import wraps
 from google import genai
 from google.genai import types
 
+from fastcore import imghdr
 from fastcore.all import *
 from fastcore.docments import *
 
@@ -222,37 +224,50 @@ def cost(self: types.GenerateImagesResponse): return 0.03 * len(self.generated_i
 def mk_part(inp: Union[str, Path, types.Part, types.File, PIL.Image.Image], c: genai.Client|None=None):
     "Turns an input fragment into a multimedia `Part` to be sent to a Gemini model"
     api_client = c or genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-    if isinstance(inp, (types.Part, types.File, PIL.Image.Image)): return inp
+    if isinstance(inp, types.Part): return inp
+    if isinstance(inp, types.File): return types.Part(file_data={"file_uri": inp.uri, "mime_type": inp.mime_type})
+    if isinstance(inp, PIL.Image.Image): return types.Part.from_bytes(data=inp.tobytes(), mime_type=inp.get_format_mimetype())
+    if isinstance(inp, bytes):
+        mt = mimetypes.types_map["." + imghdr.what(None, h=inp)]
+        return types.Part.from_bytes(data=inp, mime_type=mt)
     p_inp = Path(inp)
     if p_inp.exists():
         mt = mimetypes.guess_type(p_inp)[0]
         if mt.split("/")[0] == "image": return types.Part.from_bytes(data=p_inp.read_bytes(), mime_type=mt)
-        return api_client.files.upload(file=p_inp)
+        file = api_client.files.upload(file=p_inp)
+        return mk_part(file, c)
     return types.Part.from_text(text=inp)
         
 
-# %% ../nbs/00_Core.ipynb 95
+# %% ../nbs/00_Core.ipynb 94
 def is_texty(o): return isinstance(o, str) or (isinstance(o, types.Part) and bool(o.text))
 
 def mk_parts(inps, c=None):
-    cts = L(inps).map(mk_part, c=c) if inps else L(" ")
-    return list(cts) if len(cts) > 1 or is_texty(cts[0]) else list(cts + [" "])
+    cts = L(inps).map(mk_part, c=c) if inps else L("")
+    return list(cts) if len(cts) > 1 or is_texty(cts[0]) else list(cts + [""])
 
-# %% ../nbs/00_Core.ipynb 103
+# %% ../nbs/00_Core.ipynb 99
+def mk_msg(content: list | str, role:str='user', *args, api='genai', **kw):
+    """Create a `Content` object from the actual content (GenAI's equivalent of a Message)"""
+    c = genai.Client(api_key=os.environ['GEMINI_API_KEY'])
+    parts = mk_parts(content, c=c)
+    return types.Content(role=role, parts=parts)
+
+
+def mk_msgs(msgs: list, *args, api:str="openai", **kw) -> list:
+    "Create a list of messages compatible with the GenAI sdk"
+    if isinstance(msgs, str): msgs = [msgs]
+    return [mk_msg(o, ('user', 'model')[i % 2], *args, api=api, **kw) for i, o in enumerate(msgs)]
+
+# %% ../nbs/00_Core.ipynb 108
 @patch(as_prop=True)
 def use(self: genai.Client): return getattr(self, "_u", usage())
 
 @patch(as_prop=True)
 def cost(self: genai.Client): return getattr(self, "_cost", 0)
 
-@patch
-def _r(self: genai.Client, r):
-    self.result = r
-    self._u = self.use + getattr(r, "usage_metadata", usage())
-    self._cost = self.cost + r.cost
-    return r
 
-# %% ../nbs/00_Core.ipynb 110
+# %% ../nbs/00_Core.ipynb 116
 @patch(as_prop=True)
 def _parts(self: types.GenerateContentResponse): return nested_idx(self, "candidates", 0, "content", "parts") or []
     
@@ -266,7 +281,7 @@ def _stream(self: genai.Client, s):
     r.candidates[0].content.parts = all_parts
     self._r(r)
 
-# %% ../nbs/00_Core.ipynb 121
+# %% ../nbs/00_Core.ipynb 127
 def _googlify_docs(fdoc:str,                  # Docstring of a function
                     argdescs: dict|None=None, # Dict of arg:docment of the arguments of the function
                     retd: str|None=None       # Return docoment of the function
@@ -285,7 +300,7 @@ def goog_doc(f:callable # A docment style function
     return _googlify_docs(fdoc, args, retd)
     
 
-# %% ../nbs/00_Core.ipynb 124
+# %% ../nbs/00_Core.ipynb 130
 def _geminify(f: callable) -> callable:
     """Makes a function suitable to be turned into a function declaration: 
     infers argument types from default values and removes the values from the signature"""
@@ -293,6 +308,8 @@ def _geminify(f: callable) -> callable:
     new_params = [inspect.Parameter(name=n,
                                     kind=inspect.Parameter.POSITIONAL_OR_KEYWORD,
                                     annotation=i.anno) for n, i in docs.items() if n != 'return']
+
+        
     @wraps(f)
     def wrapper(*args, **kwargs):
         return f(*args, **kwargs)
@@ -305,13 +322,52 @@ def _geminify(f: callable) -> callable:
 def prep_tool(f:callable, # The function to be passed to the LLM
              as_decl:bool=False,  # Return an enriched genai.types.FunctionDeclaration?
              googlify_docstring:bool=True): # Use docments to rewrite the docstring following Google Style Guide? 
-    """Optimizes for function calling with the Gemini api. Best suited for docments style functions."""
+    """Optimizes a dunction for function calling with the Gemini api. Best suited for docments style functions."""
+    docs = goog_doc(f) if googlify_docstring else f.__doc__
     _f = _geminify(f)
-    if googlify_docstring: _f.__doc__ = goog_doc(_f)
+    _f.__doc__ = docs
     if not as_decl: return _f
     f_decl = types.FunctionDeclaration.from_callable_with_api_option(callable=_f, api_option='GEMINI_API')
-    for par, desc in docments(_f, returns=False).items():
+    for par, desc in docments(f, returns=False).items():
         if desc: f_decl.parameters.properties[par].description = desc
     required_params = [p for p, d in docments(f, full=True, returns=False).items() if d['default'] == inspect._empty]
     f_decl.parameters.required = required_params
     return f_decl
+
+# %% ../nbs/00_Core.ipynb 134
+def f_result(fname, fargs):
+    f = globals().get(fname)
+    try: return {"result": f(**fargs)}
+    except Exception as e: return {'error': str(e)}
+
+def f_results(fcalls):
+    return [{"name": c.name, "response": f_result(c.name, c.args)} for c in fcalls]
+
+def mk_fres_content(fres):
+    return types.Content(role='tool', parts=[types.Part.from_function_response(**d) for d in fres])
+
+# %% ../nbs/00_Core.ipynb 137
+@patch
+def _r(self: genai.Client, r):
+    self.result = r
+    self._u = self.use + getattr(r, "usage_metadata", usage())
+    self._cost = self.cost + r.cost
+    fr = None
+    if r.function_calls: fr = f_results(r.function_calls)
+    self._fr = fr
+    return r
+
+
+@patch
+def _mk_tool_call_contents(self: genai.Client):
+    q = types.Content(role="user", parts=self.query_parts) if getattr(self, "query_parts", False) else None
+    r, tc = nested_idx(self, "result", "candidates", 0, "content"), getattr(self, "_fr", None)
+    tc = mk_fres_content(tc) if tc else None
+    return [o for o in (q, r, tc) if o is not None]
+    
+
+# %% ../nbs/00_Core.ipynb 152
+@patch
+def structured(self: genai.Client, inps, tool, model=None):
+    _ = self(inps, tools=[tool], model=model, use_afc=False, tool_mode="ANY")  
+    return [nested_idx(c, "response", "result") for c in getattr(self, "_fr", [])]
