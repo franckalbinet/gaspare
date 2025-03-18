@@ -259,7 +259,7 @@ def mk_msgs(msgs: list, *args, api:str="openai", **kw) -> list:
     if isinstance(msgs, str): msgs = [msgs]
     return [mk_msg(o, ('user', 'model')[i % 2], *args, api=api, **kw) for i, o in enumerate(msgs)]
 
-# %% ../nbs/00_Core.ipynb 108
+# %% ../nbs/00_Core.ipynb 109
 @patch(as_prop=True)
 def use(self: genai.Client): return getattr(self, "_u", usage())
 
@@ -267,7 +267,7 @@ def use(self: genai.Client): return getattr(self, "_u", usage())
 def cost(self: genai.Client): return getattr(self, "_cost", 0)
 
 
-# %% ../nbs/00_Core.ipynb 116
+# %% ../nbs/00_Core.ipynb 117
 @patch(as_prop=True)
 def _parts(self: types.GenerateContentResponse): return nested_idx(self, "candidates", 0, "content", "parts") or []
     
@@ -281,7 +281,7 @@ def _stream(self: genai.Client, s):
     r.candidates[0].content.parts = all_parts
     self._r(r)
 
-# %% ../nbs/00_Core.ipynb 127
+# %% ../nbs/00_Core.ipynb 128
 def _googlify_docs(fdoc:str,                  # Docstring of a function
                     argdescs: dict|None=None, # Dict of arg:docment of the arguments of the function
                     retd: str|None=None       # Return docoment of the function
@@ -300,7 +300,7 @@ def goog_doc(f:callable # A docment style function
     return _googlify_docs(fdoc, args, retd)
     
 
-# %% ../nbs/00_Core.ipynb 130
+# %% ../nbs/00_Core.ipynb 131
 def _geminify(f: callable) -> callable:
     """Makes a function suitable to be turned into a function declaration: 
     infers argument types from default values and removes the values from the signature"""
@@ -334,7 +334,7 @@ def prep_tool(f:callable, # The function to be passed to the LLM
     f_decl.parameters.required = required_params
     return f_decl
 
-# %% ../nbs/00_Core.ipynb 134
+# %% ../nbs/00_Core.ipynb 135
 def f_result(fname, fargs):
     f = globals().get(fname)
     try: return {"result": f(**fargs)}
@@ -346,7 +346,7 @@ def f_results(fcalls):
 def mk_fres_content(fres):
     return types.Content(role='tool', parts=[types.Part.from_function_response(**d) for d in fres])
 
-# %% ../nbs/00_Core.ipynb 137
+# %% ../nbs/00_Core.ipynb 138
 @patch
 def _r(self: genai.Client, r):
     self.result = r
@@ -366,7 +366,7 @@ def _mk_tool_call_contents(self: genai.Client):
     return [o for o in (q, r, tc) if o is not None]
     
 
-# %% ../nbs/00_Core.ipynb 152
+# %% ../nbs/00_Core.ipynb 153
 @patch
 def structured(self: genai.Client, inps, tool, model=None):
     _ = self(inps, tools=[tool], model=model, use_afc=False, tool_mode="ANY")  
