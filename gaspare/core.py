@@ -4,7 +4,7 @@
 __all__ = ['all_model_types', 'thinking_models', 'imagen_models', 'vertex_models', 'models', 'pricings', 'audio_token_pricings',
            'get_repr', 'det_repr', 'contents', 'usage', 'get_pricing', 'is_youtube_url', 'mk_part', 'is_texty',
            'mk_parts', 'mk_msg', 'mk_msgs', 'goog_doc', 'prep_tool', 'f_result', 'f_results', 'mk_fres_content',
-           'Client']
+           'Client', 'Chat']
 
 # %% ../nbs/00_core.ipynb 3
 import os
@@ -76,7 +76,7 @@ def contents(r: genai.types.GenerateContentResponse):
     """Returns a dictionary with the contents of a Gemini model response"""
     cts = {'text': '', 'images': []}
     for part in nested_idx(r, 'candidates', 0, 'content', 'parts'):
-        if part.text is not None: cts['text'] += part.text + '\n'
+        if part.text is not None: cts['text'] += part.text
         if part.inline_data is not None:
             cts['images'].append(types.Image(image_bytes=part.inline_data.data, mime_type=part.inline_data.mime_type))
     return cts
@@ -224,7 +224,7 @@ audio_token_pricings = {
 }
 
 def get_pricing(model, prompt_tokens):
-    if "-exp-" in model: return [0, 0, 0]
+    if "exp" in model: return [0, 0, 0]
     suff = "_long" if prompt_tokens > 128_000 else "_short"
     m = all_model_types.get(model, "#").split("#")[-1]
     m += suff if "1.5" in m else ""
@@ -277,13 +277,13 @@ def mk_part(inp: Union[str, Path, types.Part, types.File, PIL.Image.Image], c: g
     if isinstance(inp, bytes):
         mt = mimetypes.types_map["." + imghdr.what(None, h=inp)]
         return types.Part.from_bytes(data=inp, mime_type=mt)
-    if is_youtube_url(inp): return types.Part.from_uri(file_uri=inp, mime_type='video/*')
     p_inp = Path(inp)
     if p_inp.exists():
         mt = mimetypes.guess_type(p_inp)[0]
         if mt.split("/")[0] == "image": return types.Part.from_bytes(data=p_inp.read_bytes(), mime_type=mt)
         file = api_client.files.upload(file=p_inp)
         return mk_part(file, c)
+    if is_youtube_url(inp): return types.Part.from_uri(file_uri=inp, mime_type='video/*')
     return types.Part.from_text(text=inp)
         
 
@@ -297,7 +297,7 @@ def mk_parts(inps, c=None):
 # %% ../nbs/00_core.ipynb 101
 def mk_msg(content: list | str, role:str='user', *args, api='genai', **kw):
     """Create a `Content` object from the actual content (GenAI's equivalent of a Message)"""
-    c = genai.Client(api_key=os.environ['GEMINI_API_KEY'])
+    c = kw.get('client', genai.Client(api_key=os.environ['GEMINI_API_KEY']))
     parts = mk_parts(content, c=c)
     return types.Content(role=role, parts=parts)
 
@@ -307,21 +307,33 @@ def mk_msgs(msgs: list, *args, api:str="openai", **kw) -> list:
     if isinstance(msgs, str): msgs = [msgs]
     return [mk_msg(o, ('user', 'model')[i % 2], *args, api=api, **kw) for i, o in enumerate(msgs)]
 
-# %% ../nbs/00_core.ipynb 111
+# %% ../nbs/00_core.ipynb 109
+@patch
+@delegates(genai.models.Models.__call__)
+def __call__(self: genai.Client, inps=None, **kwargs):
+    return self.models(inps, client=self, **kwargs)
+
+# %% ../nbs/00_core.ipynb 112
 @patch(as_prop=True)
-def use(self: genai.Client): return getattr(self, "_u", usage())
+def use(self: genai.models.Models): return getattr(self, "_u", usage())
 
 @patch(as_prop=True)
-def cost(self: genai.Client): return getattr(self, "_cost", 0)
+def cost(self: genai.models.Models): return getattr(self, "_cost", 0)
 
 
-# %% ../nbs/00_core.ipynb 119
+@patch(as_prop=True)
+def use(self: genai.Client): return self.models.use
+
+@patch(as_prop=True)
+def cost(self: genai.Client): return self.models.cost
+
+# %% ../nbs/00_core.ipynb 120
 @patch(as_prop=True)
 def _parts(self: types.GenerateContentResponse): return nested_idx(self, "candidates", 0, "content", "parts") or []
     
 
 @patch
-def _stream(self: genai.Client, s):
+def _stream(self: genai.models.Models, s):
     all_parts = []
     for r in s:
         all_parts.extend(r._parts)
@@ -329,7 +341,7 @@ def _stream(self: genai.Client, s):
     r.candidates[0].content.parts = all_parts
     self._r(r)
 
-# %% ../nbs/00_core.ipynb 130
+# %% ../nbs/00_core.ipynb 131
 def _googlify_docs(fdoc:str,                  # Docstring of a function
                     argdescs: dict|None=None, # Dict of arg:docment of the arguments of the function
                     retd: str|None=None       # Return docoment of the function
@@ -348,7 +360,7 @@ def goog_doc(f:callable # A docment style function
     return _googlify_docs(fdoc, args, retd)
     
 
-# %% ../nbs/00_core.ipynb 133
+# %% ../nbs/00_core.ipynb 134
 def _geminify(f: callable) -> callable:
     """Makes a function suitable to be turned into a function declaration: 
     infers argument types from default values and removes the values from the signature"""
@@ -382,7 +394,7 @@ def prep_tool(f:callable, # The function to be passed to the LLM
     f_decl.parameters.required = required_params
     return f_decl
 
-# %% ../nbs/00_core.ipynb 137
+# %% ../nbs/00_core.ipynb 139
 def f_result(fname, fargs):
     f = globals().get(fname)
     try: return {"result": f(**fargs)}
@@ -394,9 +406,9 @@ def f_results(fcalls):
 def mk_fres_content(fres):
     return types.Content(role='tool', parts=[types.Part.from_function_response(**d) for d in fres])
 
-# %% ../nbs/00_core.ipynb 140
+# %% ../nbs/00_core.ipynb 142
 @patch
-def _r(self: genai.Client, r):
+def _r(self: genai.models.Models, r):
     self.result = r
     self._u = self.use + getattr(r, "usage_metadata", usage())
     self._cost = self.cost + r.cost
@@ -407,22 +419,26 @@ def _r(self: genai.Client, r):
 
 
 @patch
-def _mk_tool_call_contents(self: genai.Client):
+def _mk_tool_call_contents(self: genai.models.Models):
     q = types.Content(role="user", parts=self.query_parts) if getattr(self, "query_parts", False) else None
     r, tc = nested_idx(self, "result", "candidates", 0, "content"), getattr(self, "_fr", None)
     tc = mk_fres_content(tc) if tc else None
     return [o for o in (q, r, tc) if o is not None]
     
 
-# %% ../nbs/00_core.ipynb 155
+# %% ../nbs/00_core.ipynb 158
 @patch
-def structured(self: genai.Client, inps, tool, model=None):
+def structured(self: genai.models.Models, inps, tool, model=None):
     _ = self(inps, tools=[tool], model=model, use_afc=False, tool_mode="ANY")  
     return [nested_idx(c, "response", "result") for c in getattr(self, "_fr", [])]
 
-# %% ../nbs/00_core.ipynb 163
 @patch
-def __call__(self: genai.Client, 
+def structured(self: genai.Client, inps, tool, model=None):
+    return self.models.structured(inps, tool, model)
+
+# %% ../nbs/00_core.ipynb 165
+@patch
+def __call__(self: genai.models.Models, 
              inps=None, # The inputs to be passed to the model
              sp:str='', # Optional system prompt
              temp:float=0.6, # Temperature
@@ -449,16 +465,17 @@ def __call__(self: genai.Client,
         fcc['mode'] = tool_mode
         tc['function_calling_config'] = fcc
         config['tool_config']= tc
-    parts = mk_parts(inps, self)
-    self.query_parts = self._mk_tool_call_contents() if (not inps) and getattr(self, "_fr", False) else parts
+    content = mk_msg(content=inps, model=kwargs.get('client', None))
+    self.query_parts = self._mk_tool_call_contents() if (not inps) and getattr(self, "_fr", False) else content
     model = kwargs.get("model", False) or getattr(self, "model", None)
     if model in imagen_models and not getattr(self, "text_only", False):
         config['response_modalities'] = kwargs.get('response_modalities', ['text', 'image'])
-    gen_f = self.models.generate_content_stream if stream else self.models.generate_content
+    gen_f = self.generate_content_stream if stream else self.generate_content
     r = gen_f(model=model, contents=self.query_parts, config=config if config else None)
     return self._stream(r) if stream else self._r(r)
 
-# %% ../nbs/00_core.ipynb 169
+
+# %% ../nbs/00_core.ipynb 172
 def Client(model:str, # The model to be used by default (can be overridden when generating)
            sp:str='', # System prompt
            temp:float=0.6, # Default temperature
@@ -466,15 +483,35 @@ def Client(model:str, # The model to be used by default (can be overridden when 
           ): 
     """An extension of `google.genai.Client` with a series of quality of life improvements"""
     c = genai.Client(api_key=os.environ['GEMINI_API_KEY'])
-    c.model, c.sp, c.temp, c.text_only = model, sp, temp, text_only
+    c.models.model, c.models.sp, c.models.temp, c.models.text_only = model, sp, temp, text_only
     return c
 
-# %% ../nbs/00_core.ipynb 177
+# %% ../nbs/00_core.ipynb 180
 @patch
-def imagen(self: genai.Client,
+def imagen(self: genai.models.Models,
            prompt:str, # Prompt for the image to be generated
-           n_img:int=1,): # Number of images to be generated (1-8)
+           n_img:int=1): # Number of images to be generated (1-8)
     """Generate one or more images using the latest Imagen model."""
-    return self.models.generate_images(
+    return self.generate_images(
                 model = 'imagen-3.0-generate-002',
                 prompt=prompt, config={"number_of_images": n_img})
+
+@patch
+@delegates(to=genai.models.Models)
+def imagen(self: genai.Client, prompt, **kwargs):
+    return self.models.imagen(prompt, **kwargs)
+
+# %% ../nbs/00_core.ipynb 183
+def Chat(model:str, # The model to be used 
+           sp:str='', # System prompt
+           temp:float=0.6, # Default temperature
+           text_only:bool=False, # Suppress multimodality even if the model allows for it
+           cli:genai.Client|None=None, # Optional Client to be passed (to keep track of usage)
+          ): 
+    """An extension of `google.genai.chats.Chat` with a series of quality of life improvements"""        
+    c = Client(model, sp, temp, text_only) if cli is None else cli
+    c.model, c.sp, c.temp, c.text_only = model, sp, temp, text_only
+    return c.chats.create(model=c.model)
+
+@patch(as_prop=True)
+def client(self: genai.chats.Chat): return self._modules
