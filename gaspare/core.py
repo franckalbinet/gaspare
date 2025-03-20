@@ -2,9 +2,9 @@
 
 # %% auto 0
 __all__ = ['all_model_types', 'thinking_models', 'imagen_models', 'vertex_models', 'models', 'pricings', 'audio_token_pricings',
-           'get_repr', 'det_repr', 'contents', 'usage', 'get_pricing', 'is_youtube_url', 'mk_part', 'is_texty',
-           'mk_parts', 'mk_msg', 'mk_msgs', 'goog_doc', 'prep_tool', 'f_result', 'f_results', 'mk_fres_content',
-           'Client', 'Chat']
+           'valid_func', 'get_repr', 'det_repr', 'contents', 'usage', 'get_pricing', 'is_youtube_url', 'mk_part',
+           'mk_parts', 'mk_content', 'mk_contents', 'mk_msg', 'mk_msgs', 'goog_doc', 'prep_tool', 'f_result',
+           'f_results', 'mk_fres_content', 'prep_tools', 'Client', 'Chat']
 
 # %% ../nbs/00_core.ipynb 3
 import os
@@ -288,32 +288,47 @@ def mk_part(inp: Union[str, Path, types.Part, types.File, PIL.Image.Image], c: g
         
 
 # %% ../nbs/00_core.ipynb 96
-def is_texty(o): return isinstance(o, str) or (isinstance(o, types.Part) and bool(o.text))
-
 def mk_parts(inps, c=None):
-    cts = L(inps).map(mk_part, c=c) if inps else L("")
-    return list(cts) if len(cts) > 1 or is_texty(cts[0]) else list(cts + [""])
+    return list(L(inps).map(mk_part, c=c)) if inps else [""]
 
-# %% ../nbs/00_core.ipynb 101
-def mk_msg(content: list | str, role:str='user', *args, api='genai', **kw):
+# %% ../nbs/00_core.ipynb 100
+def mk_content(content, role='user', cli=None):
+    if isinstance(content, types.Content): return content.model_copy(update={'role': content.role or role})
+    if isinstance(content, dict): mk_content(types.Content.model_construct(types.ContentDict(**content)), role)
+    c = cli or genai.Client(api_key=os.environ['GEMINI_API_KEY'])
+    return types.Content(role=role, parts=mk_parts(content, c=c))
+
+def _is_msg(item):
+    if isinstance(item, (types.Content, list)): return True
+    if isinstance(item, dict):
+        try:
+            types.ContentDict(**item)
+            return True
+        except: return False
+
+def mk_contents(inps, cli=None):
+    if not (is_listy(inps) and any(_is_msg(o) for o in inps)): return [mk_content(inps, cli=cli)]
+    return [mk_content(o, ('user', 'model')[i % 2], cli) for i, o in enumerate(inps)]
+
+# %% ../nbs/00_core.ipynb 107
+def mk_msg(content: list | str | types.Content, role:str='user', *args, api='genai', **kw):
     """Create a `Content` object from the actual content (GenAI's equivalent of a Message)"""
     c = kw.get('client', genai.Client(api_key=os.environ['GEMINI_API_KEY']))
-    parts = mk_parts(content, c=c)
-    return types.Content(role=role, parts=parts)
+    return mk_content(content, role, cli=c)
 
 
-def mk_msgs(msgs: list, *args, api:str="openai", **kw) -> list:
+def mk_msgs(msgs: list | str, *args, api:str="openai", **kw) -> list:
     "Create a list of messages compatible with the GenAI sdk"
     if isinstance(msgs, str): msgs = [msgs]
     return [mk_msg(o, ('user', 'model')[i % 2], *args, api=api, **kw) for i, o in enumerate(msgs)]
 
-# %% ../nbs/00_core.ipynb 109
+# %% ../nbs/00_core.ipynb 115
 @patch
 @delegates(genai.models.Models.__call__)
 def __call__(self: genai.Client, inps=None, **kwargs):
     return self.models(inps, client=self, **kwargs)
 
-# %% ../nbs/00_core.ipynb 112
+# %% ../nbs/00_core.ipynb 118
 @patch(as_prop=True)
 def use(self: genai.models.Models): return getattr(self, "_u", usage())
 
@@ -327,7 +342,7 @@ def use(self: genai.Client): return self.models.use
 @patch(as_prop=True)
 def cost(self: genai.Client): return self.models.cost
 
-# %% ../nbs/00_core.ipynb 120
+# %% ../nbs/00_core.ipynb 126
 @patch(as_prop=True)
 def _parts(self: types.GenerateContentResponse): return nested_idx(self, "candidates", 0, "content", "parts") or []
     
@@ -341,7 +356,7 @@ def _stream(self: genai.models.Models, s):
     r.candidates[0].content.parts = all_parts
     self._r(r)
 
-# %% ../nbs/00_core.ipynb 131
+# %% ../nbs/00_core.ipynb 137
 def _googlify_docs(fdoc:str,                  # Docstring of a function
                     argdescs: dict|None=None, # Dict of arg:docment of the arguments of the function
                     retd: str|None=None       # Return docoment of the function
@@ -360,7 +375,7 @@ def goog_doc(f:callable # A docment style function
     return _googlify_docs(fdoc, args, retd)
     
 
-# %% ../nbs/00_core.ipynb 134
+# %% ../nbs/00_core.ipynb 140
 def _geminify(f: callable) -> callable:
     """Makes a function suitable to be turned into a function declaration: 
     infers argument types from default values and removes the values from the signature"""
@@ -394,7 +409,7 @@ def prep_tool(f:callable, # The function to be passed to the LLM
     f_decl.parameters.required = required_params
     return f_decl
 
-# %% ../nbs/00_core.ipynb 139
+# %% ../nbs/00_core.ipynb 145
 def f_result(fname, fargs):
     f = globals().get(fname)
     try: return {"result": f(**fargs)}
@@ -406,37 +421,62 @@ def f_results(fcalls):
 def mk_fres_content(fres):
     return types.Content(role='tool', parts=[types.Part.from_function_response(**d) for d in fres])
 
-# %% ../nbs/00_core.ipynb 142
+# %% ../nbs/00_core.ipynb 148
 @patch
 def _r(self: genai.models.Models, r):
-    self.result = r
+    self.result = [nested_idx(r, "candidates", 0, "content")]
     self._u = self.use + getattr(r, "usage_metadata", usage())
     self._cost = self.cost + r.cost
-    fr = None
-    if r.function_calls: fr = f_results(r.function_calls)
-    self._fr = fr
+    for func in getattr(self, 'post_cbs', []): func(r)
+    if r.function_calls: self.result.append(mk_fres_content(f_results(r.function_calls)))
     return r
 
+   
 
-@patch
-def _mk_tool_call_contents(self: genai.models.Models):
-    q = types.Content(role="user", parts=self.query_parts) if getattr(self, "query_parts", False) else None
-    r, tc = nested_idx(self, "result", "candidates", 0, "content"), getattr(self, "_fr", None)
-    tc = mk_fres_content(tc) if tc else None
-    return [o for o in (q, r, tc) if o is not None]
-    
+# %% ../nbs/00_core.ipynb 150
+def prep_tools(tools, toolify_everything=False):
+    funcs = [prep_tool(f, as_decl=toolify_everything) for f in tools if inspect.isfunction(f)]
+    if toolify_everything: funcs = [types.Tool(function_declarations=[f]) for f in funcs]
+    tools_ = [t for t in tools if isinstance(t, types.Tool)]
+    class_tools = [types.Tool(function_declarations=[prep_tool(f, as_decl=True)]) for f in tools if inspect.isclass(f)]
+    return funcs + tools_ + class_tools
 
-# %% ../nbs/00_core.ipynb 158
+# %% ../nbs/00_core.ipynb 165
 @patch
 def structured(self: genai.models.Models, inps, tool, model=None):
     _ = self(inps, tools=[tool], model=model, use_afc=False, tool_mode="ANY")  
-    return [nested_idx(c, "response", "result") for c in getattr(self, "_fr", [])]
+    return [nested_idx(ct, "function_response", "response", "result") for ct in nested_idx(self, "result", -1, "parts") or []]
 
 @patch
 def structured(self: genai.Client, inps, tool, model=None):
     return self.models.structured(inps, tool, model)
 
-# %% ../nbs/00_core.ipynb 165
+# %% ../nbs/00_core.ipynb 172
+@patch
+def _genconf(self: genai.models.Models, **kw):
+    """Builds a GenerateContentConfigDict from call parameters"""
+    config= {k: v for k, v in kw.items() if k in types.GenerateContentConfigDict.__annotations__}
+    if _sp := kw.get("sp", False) or kw.get('system_instruction', False) or getattr(self, 'sp', False):
+        config['system_instruction'] = _sp 
+    if _temp := kw.get("temp", False) or kwargs.get('temperature', False) or getattr(self, 'temp', False):
+        config['temperature'] = _temp
+    if maxtok := kw.get("maxtok", False): config['max_output_tokens'] = maxtok
+    if stop := kw.get("stop", False): config['stop_sequences'] = [stop] if isinstance(stop, str) else stop
+
+    if tools:= kw.get("tools", False):
+        config['tools'] = prep_tools(tools, toolify_everything=not kw.get("use_afc", True))
+        tc = config.get('tool_config', dict())
+        fcc = tc.get('function_calling_config', dict())
+        fcc['mode'] = kw.get("tool_mode", 'AUTO')
+        tc['function_calling_config'] = fcc
+        config['tool_config']= tc
+        
+    if model := kw.get('model', None) in imagen_models and not getattr(self, "text_only", False):
+        config['response_modalities'] = kw.get('response_modalities', ['Text', 'Image'])
+        
+    return config
+    
+
 @patch
 def __call__(self: genai.models.Models, 
              inps=None, # The inputs to be passed to the model
@@ -452,30 +492,18 @@ def __call__(self: genai.models.Models,
              tool_mode='AUTO',  
              **kwargs):
     """Call to a Gemini LLM"""
-    config= {k: v for k, v in kwargs.items() if k in types.GenerateContentConfigDict.__annotations__}
-    if _sp := sp or kwargs.get('system_instruction', False) or getattr(self, 'sp', False): config['system_instruction'] = _sp 
-    if _temp := temp or kwargs.get('temperature', False) or getattr(self, 'temp', False): config['temperature'] = _temp
-    if maxtok: config['max_output_tokens'] = maxtok
-    if stop: config['stop_sequences'] = [stop] if isinstance(stop, str) else stop
-    ## TODO: find a better way to set `tools` and `tool_config` keeping anything passed to `kwargs`
-    if tools:
-        config['tools'] = prep_tools(tools, toolify_everything=not use_afc)
-        tc = config.get('tool_config', dict())
-        fcc = tc.get('function_calling_config', dict())
-        fcc['mode'] = tool_mode
-        tc['function_calling_config'] = fcc
-        config['tool_config']= tc
-    content = mk_msg(content=inps, model=kwargs.get('client', None))
-    self.query_parts = self._mk_tool_call_contents() if (not inps) and getattr(self, "_fr", False) else content
-    model = kwargs.get("model", False) or getattr(self, "model", None)
-    if model in imagen_models and not getattr(self, "text_only", False):
-        config['response_modalities'] = kwargs.get('response_modalities', ['text', 'image'])
+    kwargs["model"] = kwargs.get("model", getattr(self, "model", None))
+    model = kwargs["model"]
+    config = self._genconf(sp=sp, temp=temp, maxtok=maxtok, stop=stop, tools=tools, use_afc=use_afc, 
+                           tool_mode=tool_mode, **kwargs)
+    
+    contents = mk_contents(inps, cli=kwargs.get('client', None))    
     gen_f = self.generate_content_stream if stream else self.generate_content
-    r = gen_f(model=model, contents=self.query_parts, config=config if config else None)
+    r = gen_f(model=model, contents=contents, config=config if config else None)
     return self._stream(r) if stream else self._r(r)
 
 
-# %% ../nbs/00_core.ipynb 172
+# %% ../nbs/00_core.ipynb 179
 def Client(model:str, # The model to be used by default (can be overridden when generating)
            sp:str='', # System prompt
            temp:float=0.6, # Default temperature
@@ -486,7 +514,7 @@ def Client(model:str, # The model to be used by default (can be overridden when 
     c.models.model, c.models.sp, c.models.temp, c.models.text_only = model, sp, temp, text_only
     return c
 
-# %% ../nbs/00_core.ipynb 180
+# %% ../nbs/00_core.ipynb 187
 @patch
 def imagen(self: genai.models.Models,
            prompt:str, # Prompt for the image to be generated
@@ -501,7 +529,29 @@ def imagen(self: genai.models.Models,
 def imagen(self: genai.Client, prompt, **kwargs):
     return self.models.imagen(prompt, **kwargs)
 
-# %% ../nbs/00_core.ipynb 183
+# %% ../nbs/00_core.ipynb 190
+valid_func = genai.chats._validate_response
+
+@patch(as_prop=True)
+def client(self: genai.chats.Chat): return self._modules
+
+@patch(as_prop=True)
+def h(self: genai.chats.Chat): return self._curated_history
+
+@patch(as_prop=True)
+def full_h(self: genai.chats.Chat): return self._comprehensive_history
+
+@patch
+def _rec_res(self: genai.chats.Chat, resp):
+    if not getattr(self, "user_query", False): return
+    resp_c = nested_idx(resp, "candidates", 0, "content")
+    self.record_history(
+        user_input=self.user_query,
+        model_output=[resp_c] if resp_c else [],
+        automatic_function_calling_history=resp.automatic_function_calling_history,
+        is_valid=valid_func(resp)
+    )
+
 def Chat(model:str, # The model to be used 
            sp:str='', # System prompt
            temp:float=0.6, # Default temperature
@@ -511,7 +561,14 @@ def Chat(model:str, # The model to be used
     """An extension of `google.genai.chats.Chat` with a series of quality of life improvements"""        
     c = Client(model, sp, temp, text_only) if cli is None else cli
     c.model, c.sp, c.temp, c.text_only = model, sp, temp, text_only
-    return c.chats.create(model=c.model)
+    chat = c.chats.create(model=c.model)
+    chat.client.post_cbs = [chat._rec_res]
+    return chat
 
-@patch(as_prop=True)
-def client(self: genai.chats.Chat): return self._modules
+# %% ../nbs/00_core.ipynb 191
+@patch
+@delegates(genai.Client.__call__, keep=True)
+def __call__(self: genai.chats.Chat, inps=None, **kwargs):
+    self.user_query = mk_content(inps) if inps else self.client.result[-1]
+    return self.client(self.h + [self.user_query], **kwargs)
+
