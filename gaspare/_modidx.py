@@ -76,4 +76,6 @@ d = { 'settings': { 'branch': 'main',
                                                                                  'gaspare/core.py'),
                               'gaspare.core.types.Image._repr_markdown_': ('core.html#types.image._repr_markdown_', 'gaspare/core.py'),
                               'gaspare.core.types.Image.html': ('core.html#types.image.html', 'gaspare/core.py'),
-                              'gaspare.core.usage': ('core.html#usage', 'gaspare/core.py')}}}
+                              'gaspare.core.usage': ('core.html#usage', 'gaspare/core.py')},
+            'gaspare.toolloop': { 'gaspare.toolloop.genai.chats.Chat.toolloop': ( 'toolloop.html#genai.chats.chat.toolloop',
+                                                                                  'gaspare/toolloop.py')}}}
