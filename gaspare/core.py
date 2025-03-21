@@ -25,6 +25,8 @@ from fastcore import imghdr
 from fastcore.all import *
 from fastcore.docments import *
 
+from toolslm.funccall import call_func
+
 
 
 # %% ../nbs/00_core.ipynb 4
@@ -410,13 +412,12 @@ def prep_tool(f:callable, # The function to be passed to the LLM
     return f_decl
 
 # %% ../nbs/00_core.ipynb 145
-def f_result(fname, fargs):
-    f = globals().get(fname)
-    try: return {"result": f(**fargs)}
+def f_result(fname, fargs, ns=None):
+    try: return {"result": call_func(fname, fargs, ns)}
     except Exception as e: return {'error': str(e)}
 
-def f_results(fcalls):
-    return [{"name": c.name, "response": f_result(c.name, c.args)} for c in fcalls]
+def f_results(fcalls, ns=None):
+    return [{"name": c.name, "response": f_result(c.name, c.args, ns)} for c in fcalls]
 
 def mk_fres_content(fres):
     return types.Content(role='tool', parts=[types.Part.from_function_response(**d) for d in fres])
@@ -428,7 +429,8 @@ def _r(self: genai.models.Models, r):
     self._u = self.use + getattr(r, "usage_metadata", usage())
     self._cost = self.cost + r.cost
     for func in getattr(self, 'post_cbs', []): func(r)
-    if r.function_calls: self.result.append(mk_fres_content(f_results(r.function_calls)))
+    if r.function_calls:
+        self.result.append(mk_fres_content(f_results(r.function_calls, ns=getattr(self, "_tools", None))))
     return r
 
    
@@ -458,12 +460,13 @@ def _genconf(self: genai.models.Models, **kw):
     config= {k: v for k, v in kw.items() if k in types.GenerateContentConfigDict.__annotations__}
     if _sp := kw.get("sp", False) or kw.get('system_instruction', False) or getattr(self, 'sp', False):
         config['system_instruction'] = _sp 
-    if _temp := kw.get("temp", False) or kwargs.get('temperature', False) or getattr(self, 'temp', False):
+    if _temp := kw.get("temp", False) or kw.get('temperature', False) or getattr(self, 'temp', False):
         config['temperature'] = _temp
     if maxtok := kw.get("maxtok", False): config['max_output_tokens'] = maxtok
     if stop := kw.get("stop", False): config['stop_sequences'] = [stop] if isinstance(stop, str) else stop
 
     if tools:= kw.get("tools", False):
+        self._tools = tools
         config['tools'] = prep_tools(tools, toolify_everything=not kw.get("use_afc", True))
         tc = config.get('tool_config', dict())
         fcc = tc.get('function_calling_config', dict())
