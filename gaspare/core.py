@@ -408,7 +408,7 @@ def prep_tool(f:callable, # The function to be passed to the LLM
     for par, desc in docments(f, returns=False).items():
         if desc: f_decl.parameters.properties[par].description = desc
     required_params = [p for p, d in docments(f, full=True, returns=False).items() if d['default'] == inspect._empty]
-    f_decl.parameters.required = required_params
+    if getattr(f_decl.parameters, "required", None): f_decl.parameters.required = required_params
     return f_decl
 
 # %% ../nbs/00_core.ipynb 145
