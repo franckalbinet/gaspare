@@ -437,7 +437,7 @@ def _r(self: genai.models.Models, r):
 
 # %% ../nbs/00_core.ipynb 150
 def prep_tools(tools, toolify_everything=False):
-    funcs = [prep_tool(f, as_decl=toolify_everything) for f in tools if inspect.isfunction(f)]
+    funcs = [prep_tool(f, as_decl=toolify_everything) for f in tools if inspect.isfunction(f) or inspect.ismethod(f)]
     if toolify_everything: funcs = [types.Tool(function_declarations=[f]) for f in funcs]
     tools_ = [t for t in tools if isinstance(t, types.Tool)]
     class_tools = [types.Tool(function_declarations=[prep_tool(f, as_decl=True)]) for f in tools if inspect.isclass(f)]
